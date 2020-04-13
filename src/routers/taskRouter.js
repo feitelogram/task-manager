@@ -1,11 +1,15 @@
 const express = require('express')
 require('../db/mongoose')
 const Task = require('../models/task')
+const auth = require('../middleware/auth')
 
 const taskRouter = new express.Router() 
 
-taskRouter.post('/tasks', async (req, res) => {
-    const task = new Task(req.body)
+taskRouter.post('/tasks', auth, async (req, res) => {
+    const task = new Task({
+        ...req.body,
+        owner: req.user._id
+    })
     try {
        await task.save()
        res.status(201).send(task) 
@@ -14,19 +18,40 @@ taskRouter.post('/tasks', async (req, res) => {
     }
 })
 
-taskRouter.get('/tasks', async (req, res) => {
-    const tasks = await Task.find({})
-    try {   
-        res.send(tasks)
+//GET /tasks?completed= true || false
+//GET /tasks?limit=10&skip10
+//GET /tasks?sortBy=createdAt_asc || desc
+taskRouter.get('/tasks', auth, async (req, res) => {
+    const match = {}
+    const sort = {}
+    const options = {
+        limit: parseInt(req.query.limit),
+        skip: parseInt(req.query.skip),
+        sort
+    }
+    if(req.query.completed) match.completed = req.query.completed === "true";
+
+    if(req.query.sortBy){
+        const parts = req.query.sortBy.split("_")
+        sort[parts[0]] = parts[1] === "desc" ? -1 : 1
+    }
+
+    try {  
+        await req.user.populate({
+            path: 'tasks',
+            match,
+            options
+        }).execPopulate()
+        res.send(req.user.tasks)
     } catch (e) {
         e => res.status(500).send(e) 
     }
 })
 
-taskRouter.get('/tasks/:id', async (req, res)=> {
+taskRouter.get('/tasks/:id', auth, async (req, res)=> {
     const _id = req.params.id
-    const task = await Task.findById(_id)
     try {
+        const task = await Task.findOne({_id, owner: req.user._id})
         if(!task) return res.status(404).send();
         res.send(task)
     } catch (e) {
@@ -34,27 +59,26 @@ taskRouter.get('/tasks/:id', async (req, res)=> {
     }
 })
 
-taskRouter.patch('/tasks/:id', async (req, res) => {
+taskRouter.patch('/tasks/:id', auth, async (req, res) => {
     const allowedUpdates = ['description', 'completed']
-    const _id = req.params.id
     const updates = Object.keys(req.body)
     const isValidOperation = updates.every(update => allowedUpdates.includes(update))
     if(!isValidOperation) return res.status(400).send({error: "Invalid attempt to update"});
     try {
-        const task = await Task.findById(_id)
+        const task = await Task.findOne({_id: req.params.id, owner: req.user._id})
+        if(!task) return res.status(404).send();
         updates.forEach(update => task[update] = req.body[update])
         await task.save()
-        if(!task) return res.status(404).send()
-        res.send(task)
+        res.send(task) 
     } catch (e) {
         res.status(400).send()
     }
 })
 
-taskRouter.delete('/tasks/:id', async (req, res) => {
+taskRouter.delete('/tasks/:id', auth, async (req, res) => {
     const _id = req.params.id
     try {
-        const task = await Task.findByIdAndDelete(_id)
+        const task = await Task.findOneAndDelete({_id, owner: req.user._id})
         if(!task) return res.status(404).send();
         res.send(task)
     } catch (e) {
